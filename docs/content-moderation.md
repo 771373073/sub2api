@@ -68,9 +68,10 @@ Requests are checked and violations are logged, but **requests are never blocked
 | Stage | Behavior |
 |-------|----------|
 | **Hash Pre-check** | If cached hash is blocked, log but allow request |
-| **Keyword Block** | Log the match, record flag hits, allow request |
-| **OpenAI Block** | Enqueue async worker to call OpenAI, allow request immediately |
-| **Side Effects** | Email alerts sent, violation counts accumulated (ban threshold) |
+| **Keyword Flag hits** | Logged immediately (always evaluated, regardless of block) |
+| **Keyword Block hit** | Logged, OpenAI call short-circuited, request allowed (no API cost) |
+| **OpenAI Block** | If no keyword block hit: enqueue async worker to call OpenAI, allow request immediately |
+| **Side Effects** | Email alerts sent, OpenAI violations accumulate toward ban_threshold (keyword hits do **not**) |
 
 ### `pre_block`
 
@@ -79,9 +80,10 @@ Violations are logged and requests are blocked immediately. Use in production to
 | Stage | Behavior |
 |-------|----------|
 | **Hash Pre-check** | If cached hash is blocked, reject request (403) |
-| **Keyword Block** | Reject request immediately (403), log match |
-| **OpenAI Block** | Call OpenAI synchronously; reject if any category exceeds threshold |
-| **Side Effects** | Email alerts sent, violation counts accumulated (ban threshold) |
+| **Keyword Flag hits** | Logged immediately (always evaluated, regardless of block) |
+| **Keyword Block hit** | Reject request immediately (403), log match, OpenAI call short-circuited |
+| **OpenAI Block** | If no keyword block hit: call OpenAI synchronously; reject if any category exceeds threshold |
+| **Side Effects** | Email alerts sent, OpenAI violations accumulate toward ban_threshold (keyword hits do **not**) |
 
 **Important:** Keyword block hits do **not** count toward `ban_threshold` accumulation. Only OpenAI violations and hash block hits increment the ban counter. This prevents accidental mass-bans from misconfigured keyword rules.
 

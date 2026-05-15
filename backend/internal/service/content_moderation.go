@@ -859,10 +859,13 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				// In observe mode a keyword block still short-circuits so we do not
 				// pay for an OpenAI call, but the request is allowed through.
 				// This is symmetric with pre_block: the "block" intent is honoured
-				// (recorded, no API cost), only the HTTP blocking is suppressed.
+				// (recorded, no API cost), only the HTTP blocking is suppressed —
+				// hence Blocked is explicitly false (not the zero value) to make the
+				// asymmetry with the pre_block branch above intentional and visible.
 				if cfg.Mode == ContentModerationModeObserve {
 					return &ContentModerationDecision{
 						Allowed:         true,
+						Blocked:         false,
 						Flagged:         true,
 						HighestCategory: keywordCategoryLabel(blockHit.Rule),
 						Action:          ContentModerationActionKeywordBlock,
