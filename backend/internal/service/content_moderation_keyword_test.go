@@ -127,9 +127,9 @@ func TestNormalizeKeywordRules_TrimsAndDropsEmptyPatterns(t *testing.T) {
 
 func TestNormalizeKeywordRules_DefaultsAndDedups(t *testing.T) {
 	rules := normalizeKeywordRules([]KeywordRule{
-		{Pattern: "abc"},                   // empty match_type & action → substring+block
-		{Pattern: "abc"},                   // duplicate of first
-		{Pattern: "abc", MatchType: "FuZzY"}, // unknown match_type → falls back to substring → duplicate of first
+		{Pattern: "abc"},                               // empty match_type & action → substring+block
+		{Pattern: "abc"},                               // duplicate of first
+		{Pattern: "abc", MatchType: "FuZzY"},           // unknown match_type → falls back to substring → duplicate of first
 		{Pattern: "abc", MatchType: KeywordMatchRegex}, // different match_type → kept
 	})
 	require.Len(t, rules, 2)
