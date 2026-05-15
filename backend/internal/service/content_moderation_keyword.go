@@ -135,14 +135,12 @@ func (e *keywordEvaluator) matchOne(text string, rule KeywordRule) (string, bool
 }
 
 // normalizeKeywordRules trims, dedups by content key (pattern+match_type+case_insensitive),
-// assigns missing IDs, and clamps the slice length. It does not validate regex compilability —
-// that is validateKeywordRules' job.
+// and assigns missing IDs. It does not validate regex compilability — that is
+// validateKeywordRules' job. The total-count limit is enforced by validateKeywordRules
+// (returns an error) rather than silently truncating here.
 func normalizeKeywordRules(rules []KeywordRule) []KeywordRule {
 	if len(rules) == 0 {
 		return []KeywordRule{}
-	}
-	if len(rules) > maxKeywordRules {
-		rules = rules[:maxKeywordRules]
 	}
 	seenID := make(map[string]struct{}, len(rules))
 	seenContent := make(map[string]struct{}, len(rules))
@@ -175,17 +173,19 @@ func normalizeKeywordRules(rules []KeywordRule) []KeywordRule {
 
 // validateKeywordRules is called on the already-normalized slice — it only catches what
 // normalize cannot silently fix (regex syntax errors, oversized patterns, total count).
+// Exceeding maxKeywordRules is an error here (not a silent truncation in normalize) so
+// callers receive an explicit rejection rather than losing rules silently.
 func validateKeywordRules(rules []KeywordRule) error {
 	if len(rules) > maxKeywordRules {
-		return infraerrors.BadRequest("TOO_MANY_KEYWORD_RULES", fmt.Sprintf("关键词规则数量不能超过 %d 条", maxKeywordRules))
+		return infraerrors.BadRequest("TOO_MANY_CONTENT_MODERATION_KEYWORD_RULES", fmt.Sprintf("关键词规则数量不能超过 %d 条", maxKeywordRules))
 	}
 	for _, rule := range rules {
 		pattern := strings.TrimSpace(rule.Pattern)
 		if pattern == "" {
-			return infraerrors.BadRequest("INVALID_KEYWORD_PATTERN", "关键词内容不能为空")
+			return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_KEYWORD_PATTERN", "关键词内容不能为空")
 		}
 		if len([]rune(pattern)) > maxKeywordPatternRunes {
-			return infraerrors.BadRequest("INVALID_KEYWORD_PATTERN", fmt.Sprintf("关键词长度不能超过 %d 字符", maxKeywordPatternRunes))
+			return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_KEYWORD_PATTERN", fmt.Sprintf("关键词长度不能超过 %d 字符", maxKeywordPatternRunes))
 		}
 		if rule.MatchType == KeywordMatchRegex {
 			expr := pattern
@@ -193,7 +193,7 @@ func validateKeywordRules(rules []KeywordRule) error {
 				expr = "(?i)" + expr
 			}
 			if _, err := regexp.Compile(expr); err != nil {
-				return infraerrors.BadRequest("INVALID_KEYWORD_REGEX", fmt.Sprintf("关键词正则编译失败 %q: %v", pattern, err))
+				return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_KEYWORD_REGEX", fmt.Sprintf("关键词正则编译失败 %q: %v", pattern, err))
 			}
 		}
 	}
@@ -219,13 +219,32 @@ func keywordContentKey(rule KeywordRule) string {
 }
 
 // keywordRulesHash returns a stable digest of a rule set. Used as a cache key so the
-// evaluator only recompiles regex patterns when rules actually change.
+// evaluator only recompiles regex patterns when evaluation-relevant fields change.
+// Note is intentionally excluded: it is a display-only field that does not affect
+// matching behaviour, so editing a note must not bust the evaluator cache.
 func keywordRulesHash(rules []KeywordRule) string {
 	if len(rules) == 0 {
 		return "empty"
 	}
-	sorted := make([]KeywordRule, len(rules))
-	copy(sorted, rules)
+	type evalFields struct {
+		ID              string `json:"id"`
+		Pattern         string `json:"pattern"`
+		MatchType       string `json:"match_type"`
+		CaseInsensitive bool   `json:"case_insensitive"`
+		Action          string `json:"action"`
+		Enabled         bool   `json:"enabled"`
+	}
+	sorted := make([]evalFields, len(rules))
+	for i, r := range rules {
+		sorted[i] = evalFields{
+			ID:              r.ID,
+			Pattern:         r.Pattern,
+			MatchType:       r.MatchType,
+			CaseInsensitive: r.CaseInsensitive,
+			Action:          r.Action,
+			Enabled:         r.Enabled,
+		}
+	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
 	raw, err := json.Marshal(sorted)
 	if err != nil {

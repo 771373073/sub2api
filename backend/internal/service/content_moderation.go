@@ -447,8 +447,16 @@ type ContentModerationService struct {
 	lastCleanupDeletedNonHit atomic.Int64
 	keyHealthMu              sync.Mutex
 	keyHealth                map[string]*contentModerationKeyHealth
-	keywordEvalCache         atomic.Pointer[keywordEvaluator]
-	keywordEvalCacheKey      atomic.Value // string
+	keywordEvalCache         atomic.Pointer[keywordEvalCacheEntry]
+}
+
+// keywordEvalCacheEntry bundles the evaluator with its cache key so both are
+// stored and loaded atomically — a single Pointer.Store replaces what was
+// previously two separate atomic stores, eliminating the race window where a
+// reader could observe (new evaluator, old key) and recompile unnecessarily.
+type keywordEvalCacheEntry struct {
+	key  string
+	eval *keywordEvaluator
 }
 
 type contentModerationTask struct {
@@ -844,6 +852,18 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 						Flagged:         true,
 						Message:         cfg.BlockMessage,
 						StatusCode:      cfg.BlockStatus,
+						HighestCategory: keywordCategoryLabel(blockHit.Rule),
+						Action:          ContentModerationActionKeywordBlock,
+					}, nil
+				}
+				// In observe mode a keyword block still short-circuits so we do not
+				// pay for an OpenAI call, but the request is allowed through.
+				// This is symmetric with pre_block: the "block" intent is honoured
+				// (recorded, no API cost), only the HTTP blocking is suppressed.
+				if cfg.Mode == ContentModerationModeObserve {
+					return &ContentModerationDecision{
+						Allowed:         true,
+						Flagged:         true,
 						HighestCategory: keywordCategoryLabel(blockHit.Rule),
 						Action:          ContentModerationActionKeywordBlock,
 					}, nil
@@ -2116,7 +2136,8 @@ func maskSecretTail(secret string) string {
 }
 
 // validateThresholdCategories rejects threshold map entries whose keys are not in the
-// canonical 13-category list. This catches typos / dirty data before persisting.
+// canonical 13-category list, and values outside [0, 1]. This catches typos / dirty
+// data before persisting and prevents silent clamping of out-of-range values.
 func validateThresholdCategories(thresholds map[string]float64) error {
 	if len(thresholds) == 0 {
 		return nil
@@ -2125,9 +2146,12 @@ func validateThresholdCategories(thresholds map[string]float64) error {
 	for _, c := range contentModerationCategoryOrder {
 		allowed[c] = struct{}{}
 	}
-	for k := range thresholds {
+	for k, v := range thresholds {
 		if _, ok := allowed[k]; !ok {
 			return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_THRESHOLD_KEY", fmt.Sprintf("阈值类别无效: %s", k))
+		}
+		if v < 0 || v > 1 {
+			return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_THRESHOLD_VALUE", fmt.Sprintf("阈值必须在 [0, 1] 范围内: %s = %v", k, v))
 		}
 	}
 	return nil
@@ -2142,7 +2166,18 @@ func cloneKeywordRules(rules []KeywordRule) []KeywordRule {
 	return out
 }
 
-func keywordCategoryLabel(rule KeywordRule) string {
+// keywordCategoryLabel returns the HighestCategory value that goes into the
+// public-facing ContentModerationDecision. It deliberately omits rule.Note
+// and the matched pattern so that callers (attackers) cannot infer the admin's
+// rule set from API error responses.
+func keywordCategoryLabel(_ KeywordRule) string {
+	return "keyword"
+}
+
+// keywordCategoryLabelWithNote returns a richer label for admin-only log
+// entries, including the rule's Note (if set) or the pattern so that admins
+// can identify which rule fired.
+func keywordCategoryLabelWithNote(rule KeywordRule) string {
 	if note := strings.TrimSpace(rule.Note); note != "" {
 		return "keyword:" + trimRunes(note, 40)
 	}
@@ -2154,28 +2189,32 @@ func keywordCategoryLabel(rule KeywordRule) string {
 // actual changes. Returns nil if compilation fails (e.g. unexpected invalid regex
 // slipped past validation); Check() treats nil as "no rules in effect" rather than
 // failing the request.
+//
+// The evaluator and its cache key are stored together in a single atomic.Pointer
+// so readers always see a consistent (key, eval) pair — no TOCTOU window between
+// two separate atomic loads.
 func (s *ContentModerationService) getKeywordEvaluator(rules []KeywordRule) *keywordEvaluator {
 	if s == nil || len(rules) == 0 {
 		return nil
 	}
 	cacheKey := keywordRulesHash(rules)
-	if cached := s.keywordEvalCache.Load(); cached != nil {
-		if k, ok := s.keywordEvalCacheKey.Load().(string); ok && k == cacheKey {
-			return cached
-		}
+	if entry := s.keywordEvalCache.Load(); entry != nil && entry.key == cacheKey {
+		return entry.eval
 	}
 	eval, err := newKeywordEvaluator(rules)
 	if err != nil {
 		slog.Warn("content_moderation.keyword_compile_failed", "error", err)
 		return nil
 	}
-	s.keywordEvalCache.Store(eval)
-	s.keywordEvalCacheKey.Store(cacheKey)
+	s.keywordEvalCache.Store(&keywordEvalCacheEntry{key: cacheKey, eval: eval})
 	return eval
 }
 
 func (s *ContentModerationService) buildKeywordLog(input ContentModerationCheckInput, cfg *ContentModerationConfig, action string, hit KeywordMatchResult, excerpt string) *ContentModerationLog {
-	return s.buildLog(input, cfg, action, true, keywordCategoryLabel(hit.Rule), 1.0, nil, excerpt, nil, nil, "")
+	// Use the note-bearing label here so admin logs show which rule fired.
+	// The public-facing decision uses keywordCategoryLabel (no note) to avoid
+	// leaking rule details to API callers.
+	return s.buildLog(input, cfg, action, true, keywordCategoryLabelWithNote(hit.Rule), 1.0, nil, excerpt, nil, nil, "")
 }
 
 type TestKeywordsInput struct {
@@ -2198,7 +2237,7 @@ func (s *ContentModerationService) TestKeywords(_ context.Context, input TestKey
 	}
 	eval, err := newKeywordEvaluator(rules)
 	if err != nil {
-		return nil, infraerrors.BadRequest("INVALID_KEYWORD_RULES", err.Error())
+		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_KEYWORD_RULES", err.Error())
 	}
 	block, flags := eval.Evaluate(normalizeContentModerationText(input.Text))
 	if flags == nil {

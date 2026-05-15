@@ -1025,6 +1025,18 @@ func TestContentModerationUpdateConfig_AcceptsAndPersistsThresholds(t *testing.T
 		require.True(t, ok, "threshold for %q must be present after merge", cat)
 	}
 
+	// Round-trip: read back via GetConfig and verify persistence.
+	readView, err := svc.GetConfig(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 0.1, readView.Thresholds["sexual"])
+	require.Equal(t, 0.8, readView.Thresholds["violence"])
+
+	// Also verify the raw JSON stored in the setting repo.
+	var savedCfg ContentModerationConfig
+	require.NoError(t, json.Unmarshal([]byte(repo.values[SettingKeyContentModerationConfig]), &savedCfg))
+	require.Equal(t, 0.1, savedCfg.Thresholds["sexual"])
+	require.Equal(t, 0.8, savedCfg.Thresholds["violence"])
+
 	badThresholds := map[string]float64{"not_a_category": 0.5}
 	_, err = svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
 		Thresholds: &badThresholds,
@@ -1032,6 +1044,175 @@ func TestContentModerationUpdateConfig_AcceptsAndPersistsThresholds(t *testing.T
 
 	require.Error(t, err)
 	require.Equal(t, "INVALID_CONTENT_MODERATION_THRESHOLD_KEY", infraerrors.Reason(err))
+}
+
+func TestContentModerationUpdateConfig_RejectsOutOfRangeThresholdValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		thresholds map[string]float64
+		wantReason string
+	}{
+		{
+			name:       "negative value rejected",
+			thresholds: map[string]float64{"sexual": -0.5},
+			wantReason: "INVALID_CONTENT_MODERATION_THRESHOLD_VALUE",
+		},
+		{
+			name:       "value above 1 rejected",
+			thresholds: map[string]float64{"violence": 1.5},
+			wantReason: "INVALID_CONTENT_MODERATION_THRESHOLD_VALUE",
+		},
+		{
+			name:       "boundary 0 accepted",
+			thresholds: map[string]float64{"sexual": 0.0},
+			wantReason: "",
+		},
+		{
+			name:       "boundary 1 accepted",
+			thresholds: map[string]float64{"violence": 1.0},
+			wantReason: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &contentModerationTestSettingRepo{}
+			svc := NewContentModerationService(repo, nil, nil, nil, nil, nil, nil)
+			thr := tt.thresholds
+			_, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
+				Thresholds: &thr,
+			})
+			if tt.wantReason == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				require.Equal(t, tt.wantReason, infraerrors.Reason(err))
+			}
+		})
+	}
+}
+
+func TestContentModerationCheck_KeywordEvaluationOrderInvariant(t *testing.T) {
+	blockRule := KeywordRule{
+		ID:        "rule-block",
+		Pattern:   "bad word",
+		MatchType: KeywordMatchSubstring,
+		Action:    KeywordActionBlock,
+		Enabled:   true,
+	}
+
+	makeConfig := func(mode string, sampleRate int, preHash bool, keywords []KeywordRule) *ContentModerationConfig {
+		cfg := defaultContentModerationConfig()
+		cfg.Enabled = true
+		cfg.Mode = mode
+		cfg.APIKeys = []string{"sk-test"}
+		cfg.SampleRate = sampleRate
+		cfg.PreHashCheckEnabled = preHash
+		cfg.Keywords = keywords
+		return cfg
+	}
+
+	t.Run("inScope=false skips keyword evaluation", func(t *testing.T) {
+		cfg := makeConfig(ContentModerationModePreBlock, 100, false, []KeywordRule{blockRule})
+		cfg.AllGroups = false
+		cfg.GroupIDs = []int64{999} // group 999 only
+		rawCfg, err := json.Marshal(cfg)
+		require.NoError(t, err)
+
+		repo := &contentModerationTestRepo{}
+		svc := NewContentModerationService(
+			&contentModerationTestSettingRepo{values: map[string]string{
+				SettingKeyRiskControlEnabled:      "true",
+				SettingKeyContentModerationConfig: string(rawCfg),
+			}},
+			repo, &contentModerationTestHashCache{}, nil, nil, nil, nil,
+		)
+		other := int64(1) // group 1, not in scope
+		decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			GroupID:  &other,
+			Protocol: ContentModerationProtocolOpenAIChat,
+			Body:     []byte(`{"messages":[{"role":"user","content":"bad word here"}]}`),
+		})
+		require.NoError(t, err)
+		require.True(t, decision.Allowed)
+		require.False(t, decision.Blocked)
+		require.Empty(t, repo.logs, "no log should be written when out of scope")
+	})
+
+	t.Run("hash_block fires before keyword evaluation", func(t *testing.T) {
+		cfg := makeConfig(ContentModerationModePreBlock, 100, true, []KeywordRule{blockRule})
+		cfg.AllGroups = true
+		rawCfg, err := json.Marshal(cfg)
+		require.NoError(t, err)
+
+		hashCache := &contentModerationTestHashCache{hashes: map[string]struct{}{}}
+		content := ContentModerationInput{Text: "bad word here"}
+		content.Normalize()
+		hashCache.hashes[content.Hash()] = struct{}{}
+
+		repo := &contentModerationTestRepo{}
+		svc := NewContentModerationService(
+			&contentModerationTestSettingRepo{values: map[string]string{
+				SettingKeyRiskControlEnabled:      "true",
+				SettingKeyContentModerationConfig: string(rawCfg),
+			}},
+			repo, hashCache, nil, nil, nil, nil,
+		)
+		decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			Protocol: ContentModerationProtocolOpenAIChat,
+			Body:     []byte(`{"messages":[{"role":"user","content":"bad word here"}]}`),
+		})
+		require.NoError(t, err)
+		require.True(t, decision.Blocked)
+		require.Equal(t, ContentModerationActionHashBlock, decision.Action, "hash_block must fire before keyword")
+	})
+
+	t.Run("sample_rate=0 does not suppress keyword evaluation", func(t *testing.T) {
+		cfg := makeConfig(ContentModerationModePreBlock, 0, false, []KeywordRule{blockRule})
+		cfg.AllGroups = true
+		rawCfg, err := json.Marshal(cfg)
+		require.NoError(t, err)
+
+		repo := &contentModerationTestRepo{}
+		svc := NewContentModerationService(
+			&contentModerationTestSettingRepo{values: map[string]string{
+				SettingKeyRiskControlEnabled:      "true",
+				SettingKeyContentModerationConfig: string(rawCfg),
+			}},
+			repo, &contentModerationTestHashCache{}, nil, nil, nil, nil,
+		)
+		decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			Protocol: ContentModerationProtocolOpenAIChat,
+			Body:     []byte(`{"messages":[{"role":"user","content":"bad word here"}]}`),
+		})
+		require.NoError(t, err)
+		require.True(t, decision.Blocked, "keyword block must fire even when sample_rate=0")
+		require.Equal(t, ContentModerationActionKeywordBlock, decision.Action)
+	})
+
+	t.Run("empty text skips keyword evaluation", func(t *testing.T) {
+		cfg := makeConfig(ContentModerationModePreBlock, 100, false, []KeywordRule{blockRule})
+		cfg.AllGroups = true
+		rawCfg, err := json.Marshal(cfg)
+		require.NoError(t, err)
+
+		repo := &contentModerationTestRepo{}
+		svc := NewContentModerationService(
+			&contentModerationTestSettingRepo{values: map[string]string{
+				SettingKeyRiskControlEnabled:      "true",
+				SettingKeyContentModerationConfig: string(rawCfg),
+			}},
+			repo, &contentModerationTestHashCache{}, nil, nil, nil, nil,
+		)
+		// Body with empty content — keyword evaluator should not fire.
+		decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			Protocol: ContentModerationProtocolOpenAIChat,
+			Body:     []byte(`{"messages":[{"role":"user","content":""}]}`),
+		})
+		require.NoError(t, err)
+		// Empty input means the check exits early (IsEmpty).
+		require.True(t, decision.Allowed)
+		require.NotEqual(t, ContentModerationActionKeywordBlock, decision.Action)
+	})
 }
 
 func TestContentModerationCheck_KeywordBlockShortCircuitsOpenAI(t *testing.T) {
