@@ -2,6 +2,26 @@ import { apiClient } from '../client'
 
 export type ModerationMode = 'off' | 'observe' | 'pre_block'
 
+export interface KeywordRule {
+  id: string
+  pattern: string
+  match_type: 'substring' | 'regex'
+  case_insensitive: boolean
+  action: 'block' | 'flag'
+  note: string
+  enabled: boolean
+}
+
+export interface KeywordMatchResult {
+  rule: KeywordRule
+  matched: string
+}
+
+export interface TestKeywordsResult {
+  block?: KeywordMatchResult
+  flags: KeywordMatchResult[]
+}
+
 export interface ContentModerationConfig {
   enabled: boolean
   mode: ModerationMode
@@ -29,6 +49,8 @@ export interface ContentModerationConfig {
   hit_retention_days: number
   non_hit_retention_days: number
   pre_hash_check_enabled: boolean
+  thresholds: Record<string, number>
+  keywords: KeywordRule[]
 }
 
 export type ContentModerationAPIKeyStatusValue = 'unknown' | 'ok' | 'error' | 'frozen'
@@ -100,6 +122,8 @@ export interface UpdateContentModerationConfig {
   hit_retention_days?: number
   non_hit_retention_days?: number
   pre_hash_check_enabled?: boolean
+  thresholds?: Record<string, number>
+  keywords?: KeywordRule[]
 }
 
 export interface ContentModerationRuntimeStatus {
@@ -239,11 +263,17 @@ export async function clearFlaggedHashes(): Promise<ClearFlaggedHashesResponse> 
   return data
 }
 
+export async function testKeywords(text: string, rules: KeywordRule[]): Promise<TestKeywordsResult> {
+  const { data } = await apiClient.post<TestKeywordsResult>('/admin/risk-control/keywords/test', { text, rules })
+  return data
+}
+
 export const riskControlAPI = {
   getConfig,
   updateConfig,
   getStatus,
   testAPIKeys,
+  testKeywords,
   listLogs,
   unbanUser,
   deleteFlaggedHash,

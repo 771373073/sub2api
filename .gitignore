@@ -136,3 +136,10 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+
+# oh-my-claudecode session state (local only)
+.omc/
+backend/.omc/
+
+# pnpm v10 local permission grants (regenerated per machine)
+frontend/pnpm-workspace.yaml

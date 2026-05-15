@@ -32,10 +32,12 @@ const (
 	contentModerationAPIKeysModeAppend  = "append"
 	contentModerationAPIKeysModeReplace = "replace"
 
-	ContentModerationActionAllow     = "allow"
-	ContentModerationActionBlock     = "block"
-	ContentModerationActionHashBlock = "hash_block"
-	ContentModerationActionError     = "error"
+	ContentModerationActionAllow        = "allow"
+	ContentModerationActionBlock        = "block"
+	ContentModerationActionHashBlock    = "hash_block"
+	ContentModerationActionError        = "error"
+	ContentModerationActionKeywordBlock = "keyword_block"
+	ContentModerationActionKeywordFlag  = "keyword_flag"
 
 	ContentModerationProtocolAnthropicMessages = "anthropic_messages"
 	ContentModerationProtocolOpenAIResponses   = "openai_responses"
@@ -142,6 +144,7 @@ type ContentModerationConfig struct {
 	HitRetentionDays     int                `json:"hit_retention_days"`
 	NonHitRetentionDays  int                `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  bool               `json:"pre_hash_check_enabled"`
+	Keywords             []KeywordRule      `json:"keywords"`
 }
 
 type ContentModerationConfigView struct {
@@ -171,6 +174,8 @@ type ContentModerationConfigView struct {
 	HitRetentionDays     int                             `json:"hit_retention_days"`
 	NonHitRetentionDays  int                             `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  bool                            `json:"pre_hash_check_enabled"`
+	Thresholds           map[string]float64              `json:"thresholds"`
+	Keywords             []KeywordRule                   `json:"keywords"`
 }
 
 type ContentModerationAPIKeyStatus struct {
@@ -240,6 +245,8 @@ type UpdateContentModerationConfigInput struct {
 	HitRetentionDays     *int      `json:"hit_retention_days"`
 	NonHitRetentionDays  *int      `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  *bool     `json:"pre_hash_check_enabled"`
+	Thresholds           *map[string]float64 `json:"thresholds"`
+	Keywords             *[]KeywordRule      `json:"keywords"`
 }
 
 type ContentModerationCheckInput struct {
@@ -440,6 +447,8 @@ type ContentModerationService struct {
 	lastCleanupDeletedNonHit atomic.Int64
 	keyHealthMu              sync.Mutex
 	keyHealth                map[string]*contentModerationKeyHealth
+	keywordEvalCache         atomic.Pointer[keywordEvaluator]
+	keywordEvalCacheKey      atomic.Value // string
 }
 
 type contentModerationTask struct {
@@ -559,6 +568,12 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	}
 	if input.PreHashCheckEnabled != nil {
 		cfg.PreHashCheckEnabled = *input.PreHashCheckEnabled
+	}
+	if input.Thresholds != nil {
+		cfg.Thresholds = *input.Thresholds
+	}
+	if input.Keywords != nil {
+		cfg.Keywords = *input.Keywords
 	}
 	if input.AllGroups != nil {
 		cfg.AllGroups = *input.AllGroups
@@ -794,6 +809,46 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				InputHash:  hashText,
 				Action:     ContentModerationActionHashBlock,
 			}, nil
+		}
+	}
+	// Keyword pre-filter: local rules that fire before the OpenAI moderation call.
+	// Always runs (sample-rate independent, no API key required) since keywords are
+	// explicit admin rules. Block hits short-circuit in pre_block mode; flag hits and
+	// observe-mode blocks are recorded but do not interrupt the request.
+	if len(cfg.Keywords) > 0 {
+		if eval := s.getKeywordEvaluator(cfg.Keywords); eval != nil {
+			blockHit, flagHits := eval.Evaluate(content.Text)
+			for _, flag := range flagHits {
+				flagLog := s.buildKeywordLog(input, cfg, ContentModerationActionKeywordFlag, flag, content.ExcerptText())
+				_ = s.repo.CreateLog(ctx, flagLog)
+			}
+			if blockHit != nil {
+				slog.Info("content_moderation.keyword_block",
+					"user_id", input.UserID,
+					"api_key_id", input.APIKeyID,
+					"group_id", contentModerationLogGroupID(input.GroupID),
+					"endpoint", input.Endpoint,
+					"protocol", input.Protocol,
+					"rule_id", blockHit.Rule.ID,
+					"match_type", blockHit.Rule.MatchType,
+					"matched", blockHit.Matched,
+					"mode", cfg.Mode)
+				blockLog := s.buildKeywordLog(input, cfg, ContentModerationActionKeywordBlock, *blockHit, content.ExcerptText())
+				_ = s.repo.CreateLog(ctx, blockLog)
+				if cfg.Mode == ContentModerationModePreBlock {
+					// Deliberately do NOT call applyFlaggedSideEffects so keyword hits
+					// do not count toward ban_threshold accumulation.
+					return &ContentModerationDecision{
+						Allowed:         false,
+						Blocked:         true,
+						Flagged:         true,
+						Message:         cfg.BlockMessage,
+						StatusCode:      cfg.BlockStatus,
+						HighestCategory: keywordCategoryLabel(blockHit.Rule),
+						Action:          ContentModerationActionKeywordBlock,
+					}, nil
+				}
+			}
 		}
 	}
 	if !cfg.shouldSample(hashText) {
@@ -1199,6 +1254,15 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 	if cfg == nil {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_CONFIG", "内容审计配置不能为空")
 	}
+	// Validate threshold keys and keyword rules against the raw (pre-normalize) values so
+	// that invalid entries are caught before normalize() silently drops unknown threshold
+	// keys via mergeContentModerationThresholds.
+	if err := validateThresholdCategories(cfg.Thresholds); err != nil {
+		return err
+	}
+	if err := validateKeywordRules(cfg.Keywords); err != nil {
+		return err
+	}
 	cfg.normalize()
 	switch cfg.Mode {
 	case ContentModerationModeOff, ContentModerationModeObserve, ContentModerationModePreBlock:
@@ -1451,6 +1515,7 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 		HitRetentionDays:     defaultContentModerationHitRetentionDays,
 		NonHitRetentionDays:  defaultContentModerationNonHitRetentionDays,
 		PreHashCheckEnabled:  false,
+		Keywords:             []KeywordRule{},
 	}
 }
 
@@ -1529,6 +1594,7 @@ func (cfg *ContentModerationConfig) normalize() {
 	}
 	cfg.GroupIDs = normalizeInt64IDs(cfg.GroupIDs)
 	cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(), cfg.Thresholds)
+	cfg.Keywords = normalizeKeywordRules(cfg.Keywords)
 }
 
 func (cfg *ContentModerationConfig) includesGroup(groupID *int64) bool {
@@ -1705,6 +1771,8 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		HitRetentionDays:     cfg.HitRetentionDays,
 		NonHitRetentionDays:  cfg.NonHitRetentionDays,
 		PreHashCheckEnabled:  cfg.PreHashCheckEnabled,
+		Thresholds:           cloneFloatMap(cfg.Thresholds),
+		Keywords:             cloneKeywordRules(cfg.Keywords),
 	}
 }
 
@@ -2045,4 +2113,96 @@ func maskSecretTail(secret string) string {
 		return "****"
 	}
 	return strings.Repeat("*", 8) + secret[len(secret)-4:]
+}
+
+// validateThresholdCategories rejects threshold map entries whose keys are not in the
+// canonical 13-category list. This catches typos / dirty data before persisting.
+func validateThresholdCategories(thresholds map[string]float64) error {
+	if len(thresholds) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(contentModerationCategoryOrder))
+	for _, c := range contentModerationCategoryOrder {
+		allowed[c] = struct{}{}
+	}
+	for k := range thresholds {
+		if _, ok := allowed[k]; !ok {
+			return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_THRESHOLD_KEY", fmt.Sprintf("阈值类别无效: %s", k))
+		}
+	}
+	return nil
+}
+
+func cloneKeywordRules(rules []KeywordRule) []KeywordRule {
+	if len(rules) == 0 {
+		return []KeywordRule{}
+	}
+	out := make([]KeywordRule, len(rules))
+	copy(out, rules)
+	return out
+}
+
+func keywordCategoryLabel(rule KeywordRule) string {
+	if note := strings.TrimSpace(rule.Note); note != "" {
+		return "keyword:" + trimRunes(note, 40)
+	}
+	return "keyword:" + trimRunes(rule.Pattern, 40)
+}
+
+// getKeywordEvaluator returns a cached evaluator for the current rule set. Cache key
+// is the sha256 of the (ID-sorted) JSON serialization of rules — recompile only on
+// actual changes. Returns nil if compilation fails (e.g. unexpected invalid regex
+// slipped past validation); Check() treats nil as "no rules in effect" rather than
+// failing the request.
+func (s *ContentModerationService) getKeywordEvaluator(rules []KeywordRule) *keywordEvaluator {
+	if s == nil || len(rules) == 0 {
+		return nil
+	}
+	cacheKey := keywordRulesHash(rules)
+	if cached := s.keywordEvalCache.Load(); cached != nil {
+		if k, ok := s.keywordEvalCacheKey.Load().(string); ok && k == cacheKey {
+			return cached
+		}
+	}
+	eval, err := newKeywordEvaluator(rules)
+	if err != nil {
+		slog.Warn("content_moderation.keyword_compile_failed", "error", err)
+		return nil
+	}
+	s.keywordEvalCache.Store(eval)
+	s.keywordEvalCacheKey.Store(cacheKey)
+	return eval
+}
+
+func (s *ContentModerationService) buildKeywordLog(input ContentModerationCheckInput, cfg *ContentModerationConfig, action string, hit KeywordMatchResult, excerpt string) *ContentModerationLog {
+	return s.buildLog(input, cfg, action, true, keywordCategoryLabel(hit.Rule), 1.0, nil, excerpt, nil, nil, "")
+}
+
+type TestKeywordsInput struct {
+	Text  string        `json:"text"`
+	Rules []KeywordRule `json:"rules"`
+}
+
+type TestKeywordsResult struct {
+	Block *KeywordMatchResult  `json:"block,omitempty"`
+	Flags []KeywordMatchResult `json:"flags"`
+}
+
+// TestKeywords lets the admin UI dry-run a rule set against arbitrary text without
+// persisting anything. Rules are normalized + validated first so the response reflects
+// what the saved config would actually do.
+func (s *ContentModerationService) TestKeywords(_ context.Context, input TestKeywordsInput) (*TestKeywordsResult, error) {
+	rules := normalizeKeywordRules(input.Rules)
+	if err := validateKeywordRules(rules); err != nil {
+		return nil, err
+	}
+	eval, err := newKeywordEvaluator(rules)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_KEYWORD_RULES", err.Error())
+	}
+	block, flags := eval.Evaluate(normalizeContentModerationText(input.Text))
+	if flags == nil {
+		flags = []KeywordMatchResult{}
+	}
+	return &TestKeywordsResult{Block: block, Flags: flags}, nil
 }

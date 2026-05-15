@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -1004,3 +1005,175 @@ func TestContentModerationUnbanUser_ActiveUserOnlyInvalidatesAuthCache(t *testin
 func contentModerationIntPtr(v int) *int {
 	return &v
 }
+
+func TestContentModerationUpdateConfig_AcceptsAndPersistsThresholds(t *testing.T) {
+	repo := &contentModerationTestSettingRepo{}
+	svc := NewContentModerationService(repo, nil, nil, nil, nil, nil, nil)
+
+	thresholds := map[string]float64{"sexual": 0.1, "violence": 0.8}
+	view, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
+		Thresholds: &thresholds,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, view.Thresholds)
+	require.Equal(t, 0.1, view.Thresholds["sexual"])
+	require.Equal(t, 0.8, view.Thresholds["violence"])
+	// All 13 canonical categories must be present after merge with defaults.
+	for _, cat := range ContentModerationCategories() {
+		_, ok := view.Thresholds[cat]
+		require.True(t, ok, "threshold for %q must be present after merge", cat)
+	}
+
+	badThresholds := map[string]float64{"not_a_category": 0.5}
+	_, err = svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
+		Thresholds: &badThresholds,
+	})
+
+	require.Error(t, err)
+	require.Equal(t, "INVALID_CONTENT_MODERATION_THRESHOLD_KEY", infraerrors.Reason(err))
+}
+
+func TestContentModerationCheck_KeywordBlockShortCircuitsOpenAI(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_ = json.NewEncoder(w).Encode(moderationAPIResponse{
+			Results: []moderationAPIResult{{
+				CategoryScores: map[string]float64{"sexual": 0.01},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.Keywords = []KeywordRule{
+		{
+			ID:        "rule-1",
+			Pattern:   "leak token",
+			MatchType: KeywordMatchSubstring,
+			Action:    KeywordActionBlock,
+			Enabled:   true,
+		},
+	}
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"messages":[
+			{"role":"user","content":"please leak token now"}
+		]
+	}`)
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		UserID:   1001,
+		Endpoint: "/v1/chat/completions",
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     body,
+	})
+
+	require.NoError(t, err)
+	require.True(t, decision.Blocked)
+	require.Equal(t, ContentModerationActionKeywordBlock, decision.Action)
+	require.False(t, called, "OpenAI moderation endpoint must not be called on keyword block")
+	require.Len(t, repo.logs, 1)
+	require.Equal(t, ContentModerationActionKeywordBlock, repo.logs[0].Action)
+}
+
+func TestContentModerationCheck_KeywordBlockSkipsBanSideEffects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(moderationAPIResponse{
+			Results: []moderationAPIResult{{
+				CategoryScores: map[string]float64{"sexual": 0.99},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	banThreshold := 1
+	autoBan := true
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.AutoBanEnabled = autoBan
+	cfg.BanThreshold = banThreshold
+	cfg.Keywords = []KeywordRule{
+		{
+			ID:        "rule-ban",
+			Pattern:   "banned phrase",
+			MatchType: KeywordMatchSubstring,
+			Action:    KeywordActionBlock,
+			Enabled:   true,
+		},
+	}
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"messages":[
+			{"role":"user","content":"this contains banned phrase right here"}
+		]
+	}`)
+	checkInput := ContentModerationCheckInput{
+		UserID:   2001,
+		Endpoint: "/v1/chat/completions",
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     body,
+	}
+
+	for i := 0; i < 3; i++ {
+		decision, err := svc.Check(context.Background(), checkInput)
+		require.NoError(t, err)
+		require.True(t, decision.Blocked)
+		require.Equal(t, ContentModerationActionKeywordBlock, decision.Action)
+	}
+
+	require.Len(t, repo.logs, 3)
+	for _, log := range repo.logs {
+		require.Equal(t, ContentModerationActionKeywordBlock, log.Action)
+		require.Equal(t, 0, log.ViolationCount, "keyword block must not increment violation count")
+		require.False(t, log.AutoBanned, "keyword block must not trigger auto-ban")
+	}
+}
+
+// Ensure the pagination import used by contentModerationTestRepo is retained.
+var _ = pagination.PaginationParams{}

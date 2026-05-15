@@ -46,6 +46,8 @@ type contentModerationConfigRequest struct {
 	HitRetentionDays     *int      `json:"hit_retention_days"`
 	NonHitRetentionDays  *int      `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  *bool     `json:"pre_hash_check_enabled"`
+	Thresholds           *map[string]float64    `json:"thresholds"`
+	Keywords             *[]service.KeywordRule `json:"keywords"`
 }
 
 type contentModerationAPIKeyTestRequest struct {
@@ -103,6 +105,8 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		HitRetentionDays:     req.HitRetentionDays,
 		NonHitRetentionDays:  req.NonHitRetentionDays,
 		PreHashCheckEnabled:  req.PreHashCheckEnabled,
+		Thresholds:           req.Thresholds,
+		Keywords:             req.Keywords,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -218,6 +222,28 @@ func (h *ContentModerationHandler) DeleteFlaggedHash(c *gin.Context) {
 
 func (h *ContentModerationHandler) ClearFlaggedHashes(c *gin.Context) {
 	result, err := h.service.ClearFlaggedInputHashes(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+type contentModerationKeywordTestRequest struct {
+	Text  string                `json:"text"`
+	Rules []service.KeywordRule `json:"rules"`
+}
+
+func (h *ContentModerationHandler) TestKeywords(c *gin.Context) {
+	var req contentModerationKeywordTestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	result, err := h.service.TestKeywords(c.Request.Context(), service.TestKeywordsInput{
+		Text:  req.Text,
+		Rules: req.Rules,
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
