@@ -20,9 +20,11 @@ FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
 
-# Install pnpm — pin to exact version to keep Docker builds reproducible.
-# Must stay in sync with frontend/package.json's "packageManager" field.
-RUN corepack enable && corepack prepare pnpm@11.1.1 --activate
+# Install pnpm — pinned to match frontend/package.json's "packageManager" field.
+# Use npm directly instead of corepack: corepack on node:24-alpine has been
+# unreliable due to its package integrity checks (nodejs/corepack#612),
+# leading to silent install failures inside the container.
+RUN npm install -g pnpm@11.1.1 --silent
 
 # Install dependencies first (better caching)
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
