@@ -142,5 +142,4 @@ output/
 .omc/
 backend/.omc/
 
-# pnpm v10 local permission grants (regenerated per machine)
-frontend/pnpm-workspace.yaml
+# pnpm approve-builds state is intentionally committed for reproducible CI installs.

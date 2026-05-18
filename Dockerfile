@@ -26,8 +26,9 @@ WORKDIR /app/frontend
 # leading to silent install failures inside the container.
 RUN npm install -g pnpm@11.1.1 --silent
 
-# Install dependencies first (better caching)
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+# Install dependencies first (better caching). pnpm-workspace.yaml contains
+# pnpm approve-builds allowBuilds entries required by pnpm 11.
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Copy frontend source and build
