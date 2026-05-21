@@ -1,6 +1,7 @@
 import { apiClient } from '../client'
 
 export type ModerationMode = 'off' | 'observe' | 'pre_block'
+export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 
 export interface KeywordRule {
   id: string
@@ -49,6 +50,8 @@ export interface ContentModerationConfig {
   hit_retention_days: number
   non_hit_retention_days: number
   pre_hash_check_enabled: boolean
+  blocked_keywords: string[]
+  keyword_blocking_mode: KeywordBlockingMode
   thresholds: Record<string, number>
   keywords: KeywordRule[]
 }
@@ -122,6 +125,8 @@ export interface UpdateContentModerationConfig {
   hit_retention_days?: number
   non_hit_retention_days?: number
   pre_hash_check_enabled?: boolean
+  blocked_keywords?: string[]
+  keyword_blocking_mode?: KeywordBlockingMode
   thresholds?: Record<string, number>
   keywords?: KeywordRule[]
 }

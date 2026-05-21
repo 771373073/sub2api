@@ -728,169 +728,67 @@
             </div>
           </div>
 
-          <div v-else-if="activeSettingsTab === 'thresholds'" class="space-y-5">
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.thresholds.title') }}</h3>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.thresholds.description') }}</p>
-              </div>
-              <button type="button" class="btn btn-secondary inline-flex items-center gap-2" @click="resetThresholdsToDefault">
-                <Icon name="refresh" size="sm" />
-                {{ t('admin.riskControl.thresholds.resetDefault') }}
-              </button>
-            </div>
-            <div class="space-y-3">
-              <div
-                v-for="category in CATEGORY_ORDER"
-                :key="category"
-                class="grid grid-cols-1 items-center gap-3 rounded-lg border border-gray-100 p-4 dark:border-dark-700 sm:grid-cols-[200px_1fr_auto]"
-              >
-                <div>
-                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.thresholds.' + categoryI18nKey(category)) }}</p>
-                  <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ t('admin.riskControl.thresholds.defaultLabel', { value: DEFAULT_THRESHOLDS[category] }) }}</p>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="1"
-                  class="w-full accent-primary-600"
-                  :value="getThresholdValue(category)"
-                  @input="setThresholdValue(category, Number(($event.target as HTMLInputElement).value))"
-                />
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="1"
-                  class="input w-20 text-center"
-                  :value="getThresholdValue(category)"
-                  @change="setThresholdValue(category, Number(($event.target as HTMLInputElement).value))"
-                />
-              </div>
-            </div>
-          </div>
-
           <div v-else-if="activeSettingsTab === 'keywords'" class="space-y-5">
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.keywords.title') }}</h3>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.keywords.description') }}</p>
-              </div>
-              <div class="flex items-center gap-2">
-                <button type="button" class="btn btn-secondary inline-flex items-center gap-2" @click="showBatchImport = !showBatchImport">
-                  <Icon name="upload" size="sm" />
-                  {{ t('admin.riskControl.keywords.batchImport') }}
-                </button>
-                <button type="button" class="btn btn-primary inline-flex items-center gap-2" @click="addKeywordRule">
-                  <Icon name="plus" size="sm" />
-                  {{ t('admin.riskControl.keywords.addRule') }}
-                </button>
+            <div
+              class="flex items-start gap-3 rounded-lg border p-4"
+              :class="keywordNotice.toneClass"
+            >
+              <Icon
+                :name="keywordNotice.icon"
+                size="md"
+                :class="keywordNotice.iconClass"
+              />
+              <div class="text-sm leading-6">
+                <p class="font-medium" :class="keywordNotice.titleClass">{{ keywordNotice.title }}</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ keywordNotice.description }}</p>
               </div>
             </div>
 
-            <div v-if="showBatchImport" class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900/30">
-              <p class="mb-2 text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.keywords.batchImport') }}</p>
-              <textarea
-                v-model="batchImportText"
-                class="input min-h-28 resize-y font-mono text-sm"
-                :placeholder="t('admin.riskControl.keywords.batchImportPlaceholder')"
-              ></textarea>
-              <div class="mt-2 flex justify-end gap-2">
-                <button type="button" class="btn btn-secondary" @click="showBatchImport = false; batchImportText = ''">{{ t('common.cancel') }}</button>
-                <button type="button" class="btn btn-primary" :disabled="!batchImportText.trim()" @click="confirmBatchImport">{{ t('admin.riskControl.keywords.batchImportConfirm') }}</button>
-              </div>
-            </div>
-
-            <div v-if="configForm.keywords.length === 0" class="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-gray-200 py-8 text-sm text-gray-400 dark:border-dark-700 dark:text-gray-500">
-              {{ t('admin.riskControl.keywords.noRules') }}
-            </div>
-            <div v-else class="space-y-2">
-              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.keywords.ruleCount', { count: configForm.keywords.length }) }}</p>
-              <div
-                v-for="(rule, index) in configForm.keywords"
-                :key="index"
-                class="rounded-lg border border-gray-100 bg-white p-3 dark:border-dark-700 dark:bg-dark-800"
-              >
-                <div class="flex flex-wrap items-start gap-2">
-                  <Toggle v-model="rule.enabled" :title="t('admin.riskControl.keywords.enabled')" />
-                  <input
-                    v-model="rule.pattern"
-                    type="text"
-                    class="input min-w-0 flex-1"
-                    :placeholder="t('admin.riskControl.keywords.patternPlaceholder')"
-                  />
-                  <Select v-model="rule.match_type" :options="matchTypeOptions" />
-                  <Select v-model="rule.action" :options="keywordActionOptions" />
-                  <div class="flex items-center gap-1.5 rounded-lg border border-gray-100 px-3 py-2 dark:border-dark-700">
-                    <input
-                      :id="'ci-' + index"
-                      v-model="rule.case_insensitive"
-                      type="checkbox"
-                      class="h-4 w-4 rounded border-gray-300 text-primary-600 dark:border-dark-600"
-                    />
-                    <label :for="'ci-' + index" class="cursor-pointer text-sm text-gray-700 dark:text-gray-300">{{ t('admin.riskControl.keywords.caseInsensitive') }}</label>
-                  </div>
-                  <input
-                    v-model="rule.note"
-                    type="text"
-                    class="input min-w-0 flex-1"
-                    :placeholder="t('admin.riskControl.keywords.notePlaceholder')"
-                  />
-                  <button
-                    type="button"
-                    class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-300"
-                    :title="t('admin.riskControl.keywords.removeRule')"
-                    @click="removeKeywordRule(index)"
-                  >
-                    <Icon name="trash" size="sm" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900/30">
-              <p class="mb-2 text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.keywords.testTitle') }}</p>
-              <textarea
-                v-model="keywordTestText"
-                class="input min-h-24 resize-y text-sm"
-                :placeholder="t('admin.riskControl.keywords.testPlaceholder')"
-              ></textarea>
-              <div class="mt-2 flex items-center gap-2">
+            <div class="space-y-2">
+              <label class="input-label">{{ t('admin.riskControl.keywordBlockingMode') }}</label>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <button
+                  v-for="option in keywordBlockingModeOptions"
+                  :key="option.value"
                   type="button"
-                  class="btn btn-secondary inline-flex items-center gap-2"
-                  :disabled="keywordTestRunning || !keywordTestText.trim()"
-                  @click="runKeywordTest"
+                  class="rounded-lg border p-3 text-left transition-colors"
+                  :class="configForm.keyword_blocking_mode === option.value
+                    ? 'border-primary-300 bg-primary-50 text-primary-900 shadow-sm dark:border-primary-700 dark:bg-primary-900/20 dark:text-primary-100'
+                    : 'border-gray-100 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-700/60'"
+                  @click="configForm.keyword_blocking_mode = option.value"
                 >
-                  <Icon name="beaker" size="sm" :class="keywordTestRunning ? 'animate-pulse' : ''" />
-                  {{ keywordTestRunning ? t('admin.riskControl.keywords.testRunning') : t('admin.riskControl.keywords.testButton') }}
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-sm font-semibold">{{ option.label }}</span>
+                    <span
+                      class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
+                      :class="configForm.keyword_blocking_mode === option.value
+                        ? 'border-primary-500 bg-primary-500 text-white'
+                        : 'border-gray-300 text-transparent dark:border-dark-500'"
+                    >
+                      <Icon name="check" size="xs" :stroke-width="2" />
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ option.description }}</p>
                 </button>
-                <span v-if="keywordTestError" class="text-sm text-red-600 dark:text-red-400">{{ keywordTestError }}</span>
               </div>
-              <div v-if="keywordTestResult" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div class="rounded-lg border border-gray-100 bg-white p-3 dark:border-dark-700 dark:bg-dark-800">
-                  <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">{{ t('admin.riskControl.keywords.testBlockHit') }}</p>
-                  <div v-if="keywordTestResult.block" class="text-sm text-gray-700 dark:text-gray-300">
-                    <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ keywordTestResult.block.matched }}</span>
-                    <p v-if="keywordTestResult.block.rule.note" class="mt-1 text-xs text-gray-400">{{ keywordTestResult.block.rule.note }}</p>
-                  </div>
-                  <p v-else class="text-sm text-gray-400 dark:text-gray-500">—</p>
-                </div>
-                <div class="rounded-lg border border-gray-100 bg-white p-3 dark:border-dark-700 dark:bg-dark-800">
-                  <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">{{ t('admin.riskControl.keywords.testFlagHits') }}</p>
-                  <div v-if="keywordTestResult.flags.length > 0" class="space-y-1">
-                    <div v-for="(flag, fi) in keywordTestResult.flags" :key="fi" class="text-sm text-gray-700 dark:text-gray-300">
-                      <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ flag.matched }}</span>
-                      <span v-if="flag.rule.note" class="ml-2 text-xs text-gray-400">{{ flag.rule.note }}</span>
-                    </div>
-                  </div>
-                  <p v-else class="text-sm text-gray-400 dark:text-gray-500">—</p>
-                </div>
-                <div v-if="!keywordTestResult.block && keywordTestResult.flags.length === 0" class="col-span-full text-sm text-emerald-600 dark:text-emerald-400">
-                  {{ t('admin.riskControl.keywords.testNoMatch') }}
-                </div>
+            </div>
+
+            <div>
+              <div class="mb-2 flex items-center justify-between">
+                <label class="input-label mb-0">{{ t('admin.riskControl.blockedKeywords') }}</label>
+                <span class="inline-flex rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-500 dark:bg-dark-700 dark:text-gray-300">
+                  {{ t('admin.riskControl.blockedKeywordCount', { count: blockedKeywordCount }) }}
+                </span>
               </div>
+              <textarea
+                v-model="configForm.blocked_keywords_text"
+                class="input min-h-52 resize-y font-mono text-sm"
+                :placeholder="t('admin.riskControl.blockedKeywordsPlaceholder')"
+                :disabled="configForm.keyword_blocking_mode === 'api_only'"
+              ></textarea>
+              <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.riskControl.blockedKeywordsLimit', { max: blockedKeywordMax }) }}
+              </p>
             </div>
           </div>
 
@@ -996,9 +894,8 @@ import type {
   ContentModerationLog,
   ContentModerationRuntimeStatus,
   ContentModerationTestAuditResult,
-  KeywordRule,
+  KeywordBlockingMode,
   ModerationMode,
-  TestKeywordsResult,
   UpdateContentModerationConfig,
 } from '@/api/admin/riskControl'
 import type { AdminGroup, SelectOption } from '@/types'
@@ -1006,7 +903,7 @@ import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDateTimeValue } from '@/utils/format'
 
-type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'thresholds' | 'keywords' | 'retention'
+type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'retention' | 'keywords'
 type WorkerSlotState = 'active' | 'idle' | 'disabled'
 type APIKeysWriteMode = 'append' | 'replace'
 type OverviewIcon = 'shield' | 'key' | 'users' | 'document'
@@ -1030,6 +927,7 @@ type ModerationScoreRow = {
 const maxModerationTestImages = 1
 const maxModerationTestImageSize = 8 * 1024 * 1024
 const maxVisibleApiKeyRows: number = 3
+const blockedKeywordMax = 10000
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -1055,12 +953,6 @@ const moderationTestPrompt = ref('')
 const moderationTestImages = ref<string[]>([])
 const moderationTestResult = ref<ContentModerationTestAuditResult | null>(null)
 const inputDetailRow = ref<ContentModerationLog | null>(null)
-const keywordTestText = ref('')
-const keywordTestRunning = ref(false)
-const keywordTestResult = ref<TestKeywordsResult | null>(null)
-const keywordTestError = ref('')
-const showBatchImport = ref(false)
-const batchImportText = ref('')
 let statusTimer: number | null = null
 
 const configForm = reactive({
@@ -1093,8 +985,8 @@ const configForm = reactive({
   hit_retention_days: 180,
   non_hit_retention_days: 3,
   pre_hash_check_enabled: false,
-  thresholds: {} as Record<string, number>,
-  keywords: [] as KeywordRule[],
+  blocked_keywords_text: '',
+  keyword_blocking_mode: 'keyword_and_api' as KeywordBlockingMode,
 })
 
 const pagination = reactive({
@@ -1118,7 +1010,6 @@ const settingsTabs = computed<Array<{ id: SettingsTab; label: string }>>(() => [
   { id: 'scope', label: t('admin.riskControl.tabs.scope') },
   { id: 'runtime', label: t('admin.riskControl.tabs.runtime') },
   { id: 'response', label: t('admin.riskControl.tabs.response') },
-  { id: 'thresholds', label: t('admin.riskControl.tabs.thresholds') },
   { id: 'keywords', label: t('admin.riskControl.tabs.keywords') },
   { id: 'retention', label: t('admin.riskControl.tabs.retention') },
 ])
@@ -1128,6 +1019,78 @@ const modeOptions = computed<SelectOption[]>(() => [
   { value: 'observe', label: t('admin.riskControl.modeObserve') },
   { value: 'off', label: t('admin.riskControl.modeOff') },
 ])
+
+const keywordBlockingModeOptions = computed<Array<{ value: KeywordBlockingMode; label: string; description: string }>>(() => [
+  {
+    value: 'keyword_and_api',
+    label: t('admin.riskControl.keywordModeKeywordAndApi'),
+    description: t('admin.riskControl.keywordModeKeywordAndApiDesc'),
+  },
+  {
+    value: 'keyword_only',
+    label: t('admin.riskControl.keywordModeKeywordOnly'),
+    description: t('admin.riskControl.keywordModeKeywordOnlyDesc'),
+  },
+  {
+    value: 'api_only',
+    label: t('admin.riskControl.keywordModeApiOnly'),
+    description: t('admin.riskControl.keywordModeApiOnlyDesc'),
+  },
+])
+
+type KeywordNoticeView = {
+  title: string
+  description: string
+  icon: 'infoCircle' | 'exclamationTriangle'
+  toneClass: string
+  iconClass: string
+  titleClass: string
+}
+
+const keywordNoticeTones = {
+  info: {
+    icon: 'infoCircle' as const,
+    toneClass: 'border-primary-100 bg-primary-50/60 dark:border-primary-900/40 dark:bg-primary-900/10',
+    iconClass: 'mt-0.5 flex-shrink-0 text-primary-500 dark:text-primary-300',
+    titleClass: 'text-primary-700 dark:text-primary-200',
+  },
+  warning: {
+    icon: 'exclamationTriangle' as const,
+    toneClass: 'border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20',
+    iconClass: 'mt-0.5 flex-shrink-0 text-amber-500 dark:text-amber-300',
+    titleClass: 'text-amber-700 dark:text-amber-200',
+  },
+}
+
+const keywordNotice = computed<KeywordNoticeView>(() => {
+  const strategy = configForm.keyword_blocking_mode
+  if (strategy === 'api_only') {
+    return {
+      ...keywordNoticeTones.info,
+      title: t('admin.riskControl.keywordModeApiOnlyNotice'),
+      description: t('admin.riskControl.keywordModeApiOnlyDesc'),
+    }
+  }
+  if (configForm.mode !== 'pre_block') {
+    return {
+      ...keywordNoticeTones.warning,
+      title: t('admin.riskControl.blockedKeywordsModeWarning', { mode: modeLabel(configForm.mode) }),
+      description: t('admin.riskControl.blockedKeywordsDescription'),
+    }
+  }
+  if (strategy === 'keyword_only') {
+    return {
+      ...keywordNoticeTones.info,
+      title: t('admin.riskControl.keywordModeKeywordOnlyNotice'),
+      description: t('admin.riskControl.keywordModeKeywordOnlyDesc'),
+    }
+  }
+  return {
+    ...keywordNoticeTones.info,
+    title: t('admin.riskControl.blockedKeywordsPreBlockHint'),
+    description: t('admin.riskControl.blockedKeywordsDescription'),
+  }
+})
 
 const resultOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('admin.riskControl.result.all') },
@@ -1166,6 +1129,10 @@ const filteredGroups = computed(() => {
 })
 
 const inputApiKeyCount = computed(() => parseApiKeys(configForm.api_keys_text).length)
+
+const blockedKeywordList = computed(() => parseBlockedKeywords(configForm.blocked_keywords_text))
+
+const blockedKeywordCount = computed(() => blockedKeywordList.value.length)
 
 const pendingDeletedApiKeyCount = computed(() => pendingDeleteApiKeyHashes.value.length)
 
@@ -1373,17 +1340,8 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.hit_retention_days = config.hit_retention_days || 180
   configForm.non_hit_retention_days = Math.min(Math.max(config.non_hit_retention_days || 3, 1), 3)
   configForm.pre_hash_check_enabled = config.pre_hash_check_enabled ?? false
-  // Convert 0-1 thresholds from backend to 0-100 for slider/number display
-  if (config.thresholds && typeof config.thresholds === 'object') {
-    const scaled: Record<string, number> = {}
-    for (const [k, v] of Object.entries(config.thresholds)) {
-      scaled[k] = Math.round(v * 100)
-    }
-    configForm.thresholds = scaled
-  } else {
-    configForm.thresholds = {}
-  }
-  configForm.keywords = Array.isArray(config.keywords) ? [...config.keywords] : []
+  configForm.blocked_keywords_text = Array.isArray(config.blocked_keywords) ? config.blocked_keywords.join('\n') : ''
+  configForm.keyword_blocking_mode = normalizeKeywordBlockingMode(config.keyword_blocking_mode)
 }
 
 async function loadAll() {
@@ -1453,15 +1411,8 @@ async function saveConfig() {
       hit_retention_days: Number(configForm.hit_retention_days) || 180,
       non_hit_retention_days: Math.min(Math.max(Number(configForm.non_hit_retention_days) || 3, 1), 3),
       pre_hash_check_enabled: configForm.pre_hash_check_enabled,
-      keywords: [...configForm.keywords],
-    }
-    // Convert 0-100 display values back to 0-1 for backend
-    if (Object.keys(configForm.thresholds).length > 0) {
-      const scaled: Record<string, number> = {}
-      for (const [k, v] of Object.entries(configForm.thresholds)) {
-        scaled[k] = v / 100
-      }
-      payload.thresholds = scaled
+      blocked_keywords: blockedKeywordList.value,
+      keyword_blocking_mode: configForm.keyword_blocking_mode,
     }
     const keys = parseApiKeys(configForm.api_keys_text)
     if (!payload.clear_api_key && configForm.api_keys_mode === 'replace' && keys.length === 0) {
@@ -1761,6 +1712,7 @@ function modeDescription(mode: ModerationMode): string {
 }
 
 function resultLabel(row: ContentModerationLog): string {
+  if (row.action === 'keyword_block') return t('admin.riskControl.action.keywordBlock')
   if (row.action === 'block') return t('admin.riskControl.action.block')
   if (row.action === 'error' || row.error) return t('admin.riskControl.action.error')
   if (row.flagged) return t('admin.riskControl.result.hit')
@@ -1768,7 +1720,7 @@ function resultLabel(row: ContentModerationLog): string {
 }
 
 function resultBadgeClass(row: ContentModerationLog): string {
-  if (row.action === 'block') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  if (row.action === 'block' || row.action === 'keyword_block') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
   if (row.action === 'error' || row.error) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
   if (row.flagged) return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300'
   return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
@@ -1865,6 +1817,27 @@ function parseApiKeys(value: string): string[] {
     .filter((item, index, arr) => item && arr.indexOf(item) === index)
 }
 
+function normalizeKeywordBlockingMode(value: unknown): KeywordBlockingMode {
+  if (value === 'keyword_only' || value === 'api_only' || value === 'keyword_and_api') {
+    return value
+  }
+  return 'keyword_and_api'
+}
+
+function parseBlockedKeywords(value: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of value.split(/\r?\n/)) {
+    const kw = line.trim()
+    if (!kw) continue
+    const key = kw.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(kw)
+  }
+  return out
+}
+
 function violationCountText(row: ContentModerationLog): string {
   if (!row.flagged) return '-'
   return t('admin.riskControl.violationCount', { count: row.violation_count || 1 })
@@ -1883,126 +1856,6 @@ function formatDateTime(value: string): string {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value)
-}
-
-// --- Thresholds ---
-
-const CATEGORY_ORDER = [
-  'harassment',
-  'harassment/threatening',
-  'hate',
-  'hate/threatening',
-  'illicit',
-  'illicit/violent',
-  'self-harm',
-  'self-harm/intent',
-  'self-harm/instructions',
-  'sexual',
-  'sexual/minors',
-  'violence',
-  'violence/graphic',
-] as const
-
-const DEFAULT_THRESHOLDS: Record<string, number> = {
-  harassment: 98,
-  'harassment/threatening': 90,
-  hate: 65,
-  'hate/threatening': 65,
-  illicit: 95,
-  'illicit/violent': 95,
-  'self-harm': 65,
-  'self-harm/intent': 85,
-  'self-harm/instructions': 65,
-  sexual: 65,
-  'sexual/minors': 65,
-  violence: 95,
-  'violence/graphic': 95,
-}
-
-function categoryI18nKey(category: string): string {
-  // harassment/threatening -> harassmentThreatening
-  return category
-    .replace(/\//g, ' ')
-    .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
-    .replace(/\s+([a-zA-Z])/g, (_, c: string) => c.toUpperCase())
-}
-
-function resetThresholdsToDefault() {
-  configForm.thresholds = { ...DEFAULT_THRESHOLDS }
-}
-
-function getThresholdValue(category: string): number {
-  return configForm.thresholds[category] ?? DEFAULT_THRESHOLDS[category] ?? 65
-}
-
-function setThresholdValue(category: string, value: number) {
-  configForm.thresholds[category] = Math.min(100, Math.max(0, Math.round(value)))
-}
-
-// --- Keywords ---
-
-function addKeywordRule() {
-  configForm.keywords.push({
-    id: '',
-    pattern: '',
-    match_type: 'substring',
-    case_insensitive: false,
-    action: 'block',
-    note: '',
-    enabled: true,
-  })
-}
-
-function removeKeywordRule(index: number) {
-  configForm.keywords.splice(index, 1)
-}
-
-function confirmBatchImport() {
-  const lines = batchImportText.value
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-  const existingPatterns = new Set(configForm.keywords.map((r) => r.pattern))
-  for (const line of lines) {
-    if (!existingPatterns.has(line)) {
-      configForm.keywords.push({
-        id: '',
-        pattern: line,
-        match_type: 'substring',
-        case_insensitive: false,
-        action: 'block',
-        note: '',
-        enabled: true,
-      })
-      existingPatterns.add(line)
-    }
-  }
-  batchImportText.value = ''
-  showBatchImport.value = false
-}
-
-const matchTypeOptions = computed(() => [
-  { value: 'substring', label: t('admin.riskControl.keywords.matchTypeSubstring') },
-  { value: 'regex', label: t('admin.riskControl.keywords.matchTypeRegex') },
-])
-
-const keywordActionOptions = computed(() => [
-  { value: 'block', label: t('admin.riskControl.keywords.actionBlock') },
-  { value: 'flag', label: t('admin.riskControl.keywords.actionFlag') },
-])
-
-async function runKeywordTest() {
-  if (!keywordTestText.value.trim() || keywordTestRunning.value) return
-  keywordTestRunning.value = true
-  keywordTestResult.value = null
-  keywordTestError.value = ''
-  try {
-    keywordTestResult.value = await adminAPI.riskControl.testKeywords(keywordTestText.value, configForm.keywords)
-  } catch (err: unknown) {
-    keywordTestError.value = extractApiErrorMessage(err, t('admin.riskControl.keywords.testFailed'))
-  } finally {
-    keywordTestRunning.value = false
-  }
 }
 
 onMounted(() => {
